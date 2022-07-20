@@ -1,0 +1,95 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(ggpubr)
+library("cowplot")
+library("gridExtra")
+library(ggplot2)
+
+save_path<-"downloaded file of chea3 enriched TF based on unique DDGs" #https://maayanlab.cloud/chea3/
+
+file_list<-list.files(save_path,pattern = "*.tsv",full.names = T)
+file_list_n<-list.files(save_path,pattern = "*.tsv",full.names = F)
+
+TF_enrich<-lapply(file_list, function(read_list) read.table(read_list,sep = "\t",header = T)[,c(2:4)])
+
+names(TF_enrich)<-substr(file_list_n,21,nchar(file_list_n)-4)
+names(TF_enrich)
+
+lapply(TF_enrich, function(x) print(x$TF[1:10]))
+```
+
+```{r}
+nr_of_tfs<-18
+i=names(TF_enrich)[1]
+ecd<- data.frame(
+  gene=as.character(TF_enrich[[i]]$TF[1:nr_of_tfs]), 
+  score=as.numeric(TF_enrich[[i]]$Score[1:nr_of_tfs])
+)
+ecd$cell_type<-rep("EC",nrow(ecd))
+ecd$order<-as.integer(c(1:nrow(ecd)))
+
+i=names(TF_enrich)[2]
+mcd <- data.frame(
+  gene=as.character(TF_enrich[[i]]$TF[1:nr_of_tfs]), 
+  score=as.numeric(TF_enrich[[i]]$Score[1:nr_of_tfs])
+)
+mcd$cell_type<-rep("MC",nrow(mcd))
+mcd$order<-as.integer(c(1:nrow(mcd)))
+```
+
+set common min an max to get the same color scale
+```{r}
+# add min an max values
+ecd<-rbind(ecd,c("min",min(ecd$score),"EC",0))
+ecd<-rbind(ecd,c("max",max(ecd$score),"EC",nr_of_tfs+1))
+mcd<-rbind(mcd,c("min",min(ecd$score),"MC",0))
+mcd<-rbind(mcd,c("max",max(ecd$score),"MC",nr_of_tfs+1))
+ecd$score<-as.numeric(ecd$score)
+ecd$order<-as.numeric(ecd$order)
+mcd$score<-as.numeric(mcd$score)
+mcd$order<-as.numeric(mcd$order)
+```
+
+generate plots
+mural
+```{r}
+data<-mcd
+p_mc<-ggplot(data, aes( reorder(gene, order), cell_type, fill= score)) + 
+        xlab("enriched TFs") + ylab("cell type")+
+        geom_tile() +
+        scale_fill_distiller(name = "mean rank\nscore",palette = "OrRd",direction=-1)+
+      theme(panel.background = element_blank(),
+            axis.text.x = element_text(angle = 90))
+```
+
+angioblast
+```{r}
+data<-ecd
+p_ec<-ggplot(data, aes( reorder(gene, order), cell_type, fill= score)) + 
+        xlab("enriched TFs") + ylab("cell type")+
+        geom_tile() +
+        scale_fill_distiller(name = "mean rank\nscore",palette = "OrRd",direction=-1)+
+      theme(panel.background = element_blank(),
+            axis.text.x = element_text(angle = 90))
+```
+
+combine plots
+```{r}
+plot<-ggarrange(p_ec, p_mc,  
+          #labels = c("A", "B"),
+          ncol = 1, nrow = 2)
+```
+
+export to pdf
+```{r}
+# extrafont::font_import() #install extra fonds
+#extrafont::loadfonts() 
+
+plot%>%
+  ggexport(filename = paste0(save_path,"/TF_mean_rank_score_EC_and_MC_sel.pdf"))
+plot
+```

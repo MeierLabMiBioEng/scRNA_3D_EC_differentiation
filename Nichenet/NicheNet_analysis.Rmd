@@ -1,0 +1,780 @@
+---
+title: "R Notebook - NicheNet analysis"
+output: html_notebook
+---
+
+load libraries
+```{r, echo=FALSE}
+library(gridBase)
+library(ComplexHeatmap)
+library(nichenetr)
+library(Seurat)
+library(tidyverse)
+library(circlize)
+library(stringr)
+library(RColorBrewer)
+library(cowplot)
+library(ggpubr)
+library(xlsx)
+```
+
+load function and data
+```{r}
+ligand_target_matrix = readRDS(url("https://zenodo.org/record/3260758/files/ligand_target_matrix.rds"))
+lr_network = readRDS(url("https://zenodo.org/record/3260758/files/lr_network.rds"))
+weighted_networks = readRDS(url("https://zenodo.org/record/3260758/files/weighted_networks.rds"))
+weighted_networks_lr_sig = weighted_networks$lr_sig %>% inner_join(lr_network %>% distinct(from,to), by = c("from","to"))
+weighted_networks_lr_gr = weighted_networks$gr %>% inner_join(lr_network %>% distinct(from,to), by = c("from","to"))
+##################
+read_DEG<-function(loc_ranked_genes){
+  py_clu_ma_f<-list.files(loc_ranked_genes,
+                          full.names = T,pattern = ".xls")
+  py_clu_ma<-lapply(py_clu_ma_f,function(x) read.xlsx(x,1))
+  names(py_clu_ma)<-substr(py_clu_ma_f,nchar(loc_ranked_genes),nchar(py_clu_ma_f))
+  names(py_clu_ma)
+  #nrow(py_clu_ma[[4]])
+  py_clu_ma
+}
+###################
+read_csv_to_seutat<-function(loc_anndata){
+  X<-as.matrix(read.table(paste0(loc_anndata,"/X.csv"),sep = ","))
+  var<-read.table(paste0(loc_anndata,"/var.csv"),sep = ",",header = T)
+  obs<-read.table(paste0(loc_anndata,"/obs.csv"),sep = ",",header = T)
+  obsm<-read.table(paste0(loc_anndata,"/obsm.csv"),sep = ",",header = T)
+  if (colnames(obs)[1]=="index") {
+    colnames(X)<-as.character(var$index)
+    rownames(obs)<-as.character(obs$index)
+  }else{
+    if (length(as.character(var$X))==0){
+      colnames(X)<-rownames(var)
+    }else{
+      colnames(X)<-as.character(var$X)
+    }
+    rownames(obs)<-as.character(obs$X)
+  }
+  rownames(X)<-rownames(obs)
+  umap_a<-as.matrix(obsm[,c(str_detect(colnames(obsm),"X_umap"))])
+  rownames(umap_a)<-rownames(obs)
+  colnames(umap_a)<-c("UMAP_1", "UMAP_2")
+  
+  seuratObj<-CreateSeuratObject(counts = t(X),
+                     project = "1",
+                     assay= "RNA")
+  # I was not able to create the UMAP structure from scratch. This is why I used the structure of a older one which I overwrote.
+  seuratObj@reductions$umap<-readRDS("I:/DATA/HPC/Server_Files/07_Scripts/reductions_umap.rds")
+  seuratObj@reductions$umap@cell.embeddings<-umap_a
+  seuratObj@meta.data<-obs
+  if(length(which(colnames(seuratObj@meta.data) == "leiden_anno"))==1){
+      pl1<-DimPlot(seuratObj, group.by = "leiden_anno")
+      pl2<-DimPlot(seuratObj, group.by = "leiden")
+      print(CombinePlots(list(pl1,pl2)))
+  }else{
+    if(length(which(colnames(seuratObj@meta.data) == "leiden"))==1){
+      print(DimPlot(seuratObj, group.by = "leiden"))
+    }
+  }
+
+  seuratObj
+}
+##############
+combined_plotting_T<-function(p_ligand_pearson,
+                            p_ligand_expression,
+                            p_network,
+                            p_tarec_expression,
+                            seuObj,
+                            mx_size,
+                            fig.title){
+  figures_without_legend = plot_grid(
+    p_ligand_pearson + theme(legend.position = "none", axis.ticks = element_blank()) + theme(axis.title.x = element_text()) +
+      ggtitle(fig.title),
+    p_ligand_expression + theme(legend.position = "none", axis.ticks = element_blank()) + theme(axis.title.x = element_text()) + ylab(""),
+    p_network + theme(legend.position = "none", axis.ticks = element_blank()) + ylab(""), 
+    NULL,
+    NULL,
+    p_tarec_expression + theme(legend.position = "none", axis.ticks = element_blank()) + xlab(""), 
+    align = "hv",
+    nrow = 2,
+    rel_widths = c(length(levels(seuObj)) * 2, length(levels(seuObj)) * 2, ncol(mx_size) ) ,
+    rel_heights = c(nrow(mx_size), length(levels(seuObj)) + 5)) 
+  
+  legends = plot_grid(
+    as_ggplot(get_legend(p_ligand_pearson)),
+    as_ggplot(get_legend(p_ligand_expression)),
+    as_ggplot(get_legend(p_network)),
+    as_ggplot(get_legend(p_tarec_expression)),
+    nrow = 2,
+    align = "h")
+  
+  out_plot<-plot_grid(figures_without_legend, 
+                      legends, 
+                      rel_heights = c(10,2), nrow = 2, align = "hv")
+  
+  out_plot
+}
+
+combined_plotting_R<-function(p_ligand_expression,
+                            p_network,
+                            p_tarec_expression,
+                            seuObj,
+                            mx_size,
+                            fig.title){
+  figures_without_legend = plot_grid(
+    p_ligand_expression + theme(legend.position = "none", axis.ticks = element_blank()) + theme(axis.title.x = element_text()) + ylab("") +
+      ggtitle(fig.title),
+    p_network + theme(legend.position = "none", axis.ticks = element_blank()) + ylab(""), 
+    NULL,
+    NULL,
+    p_tarec_expression + theme(legend.position = "none", axis.ticks = element_blank()) + xlab(""), 
+    align = "hv",
+    nrow = 2,
+    rel_widths = c(length(levels(seuObj)) * 4, ncol(mx_size) * 2 ) ,
+    rel_heights = c(nrow(mx_size), length(levels(seuObj)) + 5)) 
+  
+  legends = plot_grid(
+    as_ggplot(get_legend(p_ligand_expression)),
+    as_ggplot(get_legend(p_network)),
+    as_ggplot(get_legend(p_tarec_expression)),
+    nrow = 2,
+    align = "h")
+  
+  out_plot<-plot_grid(figures_without_legend, 
+                      legends, 
+                      rel_heights = c(10,2), nrow = 2, align = "hv")
+  
+  out_plot
+}
+```
+
+
+read in DEGs and scrna dataset
+```{r}
+loc_ranked_genes<-"path DEG file"
+loc_anndata<-"path to folder of dataser saved as .csv files"
+save_path=loc_ranked_genes
+listOfGenes<-read_DEG(loc_ranked_genes)
+names(listOfGenes)<-substr(names(listOfGenes),12,nchar(names(listOfGenes))-5)
+names(listOfGenes)
+my_seu<-read_csv_to_seutat(loc_anndata)
+my_seu_1<-my_seu
+my_seu <- ScaleData(object = my_seu) 
+colnames(my_seu@meta.data)
+
+Cluster_Sel_Ident<-"leiden_anno"
+
+DimPlot(my_seu,group.by = "leiden_anno")
+```
+
+specify sender and receiver and select associated DEGs
+one of the next two chunks is executed for the respective directionality 
+sender = MC3  MC2
+```{r}
+sender_celltypes=c("pericytes_1","pericytes_2")
+receiver=c("tubulogenic_ECs")
+
+py_clu_ma <-listOfGenes[[1]]
+nr_goi<-c(2,3)
+geneset_oi <- c(py_clu_ma[[nr_goi[1]]],py_clu_ma[[nr_goi[2]]])
+```
+
+sender = EC18
+```{r}
+receiver=c("pericytes_1","pericytes_2")
+sender_celltypes=c("tubulogenic_ECs")
+
+py_clu_ma <-listOfGenes[[1]]
+nr_goi<-7
+geneset_oi <- py_clu_ma[[nr_goi]]
+```
+
+
+preparation
+```{r}
+Idents(my_seu)<-"batch"
+Idents(my_seu)<-"leiden_anno"
+levels(my_seu)
+levels(my_seu$leiden_anno)
+# sender_celltypes=c("MC-2")
+# receiver=c("EC-plexus_18")
+condition_oi=c("d18m2", "d18a2")
+write_textfile=T
+
+lig_cut_off<-40
+levels(my_seu)
+seuratObj<-my_seu#subset(my_seu,idents=c("endothelial","mesenchymal"))
+
+
+#which(str_detect(names(py_clu_ma),receiver)==T)
+
+#geneset_oi <-as.character(py_clu_ma[[nr_goi]][,2])
+geneset_oi <- geneset_oi %>% .[. %in% rownames(ligand_target_matrix)] # %>% 
+geneset_oi
+#.[. %in% as.character(Hum_Prot_atl_seq$Gene)]
+print(paste0("geneset_oi: ",length(geneset_oi)))
+gs_n<-names(py_clu_ma)[nr_goi]
+print(gs_n)
+fig.title<-paste0('c_oi_',paste(condition_oi,collapse = "_"),
+                  '_gene_set_',paste(gs_n,collapse = "+"),
+                  "_sender_", paste(sender_celltypes,collapse = "+"),
+                  "_receiver_",paste(receiver,collapse = "+")
+                  )
+print(fig.title)
+
+
+```
+
+run
+```{r}
+print(paste0("receiver: ",receiver))
+  #if ("batch" %in%  colnames(seuratObj@meta.data)) {
+  Idents(seuratObj)<-'batch'
+  seuratObj_coi<-subset(seuratObj, idents = condition_oi)
+  
+  # i=1
+  # receiver<-receiver[i]
+  # condition_oi<-condition_oi[i]
+  # sender_celltypes<-sender_celltypes[i]
+  #seuratObj_coi@meta.data
+  Idents(seuratObj)<-'leiden_anno'
+  Idents(seuratObj_coi)<-'leiden_anno'
+  DimPlot(seuratObj_coi)
+  levels(seuratObj_coi)
+  levels(seuratObj)
+  # new_Ids<-c("EC","EC","EC","epi","Mes","Mes")
+  # names(new_Ids)<-levels(seuratObj)
+  # seuratObj<-RenameIdents(seuratObj,new_Ids)
+  expressed_genes_receiver = get_expressed_genes(receiver, seuratObj_coi, pct = 0.10)
+  
+  # expressed_genes_total<-as.character(raw_genes$index[raw_genes$n_cells>summary(raw_genes$n_cells)[2]])
+  # expressed_genes_total<-unique(c(expressed_genes_total,expressed_genes_receiver))
+  background_expressed_genes = expressed_genes_receiver %>% .[. %in% rownames(ligand_target_matrix)]
+  #background_expressed_genes = expressed_genes_receiver %>% .[. %in% rownames(ligand_target_matrix)]
+  print(paste0("Background Genes: ",length(background_expressed_genes)))
+  
+  # Idents(seuratObj_coi)<-'leiden'
+  # sender_celltypes<-levels(seuratObj_coi)[1:5]
+  #expressed_genes_sender = get_expressed_genes(sender_celltypes[2], seuratObj_coi, pct = 0.10)
+  ## sender
+  list_expressed_genes_sender = sender_celltypes %>% unique() %>% 
+    lapply(get_expressed_genes, seuratObj_coi, 0.10) # lapply to get the expressed genes of every sender cell type separately here
+  expressed_genes_sender = list_expressed_genes_sender %>% unlist() %>% unique()
+  
+  
+  seurat_obj_receiver= subset(seuratObj, idents = receiver)
+  # seurat_obj_receiver = SetIdent(seurat_obj_receiver, value = seurat_obj_receiver[["batch"]])
+  Idents(seurat_obj_receiver)<-'leiden_anno'
+  levels(seurat_obj_receiver)
+  DimPlot(seurat_obj_receiver, reduction = "umap", group.by = "leiden_anno")
+  # seurat_obj_receiver@meta.data[c("leiden_anno","batch")] %>% table()
+  
+  ## 3\. Define a set of potential ligands: these are ligands that are expressed by the “sender/niche” cell population and bind a (putative) receptor expressed by the “receiver/target” population
+  ligands = lr_network %>% pull(from) %>% unique()
+  receptors = lr_network %>% pull(to) %>% unique()
+  
+  expressed_ligands = intersect(ligands,expressed_genes_sender)
+  expressed_receptors = intersect(receptors,expressed_genes_receiver)
+  
+  potential_ligands = lr_network %>% filter(from %in% expressed_ligands & to %in% expressed_receptors) %>% pull(from) %>% unique()
+  
+  
+  # 4\) Perform NicheNet ligand activity analysis: rank the potential ligands based on the presence of their target genes in the gene set of interest (compared to the background set of genes)
+  
+  ligand_activities = predict_ligand_activities(geneset = geneset_oi, 
+                                                background_expressed_genes = background_expressed_genes, 
+                                                ligand_target_matrix = ligand_target_matrix, 
+                                                potential_ligands = potential_ligands)
+  
+  ########################################################################
+  #ligand_activities<-ligand_activities[as.character(ligand_activities$test_ligand) %in% rownames(seuratObj),]
+  suspicious_gene<-"HLA"
+  if (length(ligand_activities$test_ligand[str_detect(ligand_activities$test_ligand,suspicious_gene)])<1) {
+    print("out")
+    #  print(rownames(vis_ligand_target))
+  }else{
+    print("in")
+    ligand_activities<-ligand_activities[-c(which(str_detect(ligand_activities$test_ligand,suspicious_gene)==T)),]
+    # print(rownames(vis_ligand_target))
+  }
+  # ########################################################################
+
+  ########################################################################
+  
+  ligand_activities = ligand_activities %>% arrange(-pearson) #%>% mutate(rank = rank(desc(pearson)))
+  # show histogram of ligand activity scores
+  p_hist_lig_activity = ggplot(ligand_activities, aes(x=pearson)) + 
+    geom_histogram(color="black", fill="darkorange")  + 
+    # geom_density(alpha=.1, fill="orange") +
+    geom_vline(aes(xintercept=min(ligand_activities %>% top_n(lig_cut_off, pearson) %>% pull(pearson))), color="red", linetype="dashed", size=1) + 
+    labs(x="ligand activity (PCC)", y = "# ligands") +
+    theme_classic() + ggtitle(paste0('condition_oi: ',condition_oi,' | gene_set: ',gs_n," | sender: ",toString(sender_celltypes)," | receiver: ",receiver))
+  p_hist_lig_activity
+  #####################
+  # seurat_obj_sender= subset(seuratObj, idents = sender_celltypes)
+  #       ave_lig_exp<-AverageExpression(object = seurat_obj_sender,
+  #                                              features = ligand_activities$test_ligand,
+  #                                              slot = "scale.data")
+  ######################
+      ave_lig_exp<-AverageExpression(object = subset(seuratObj_coi,idents = sender_celltypes),
+                                               features = ligand_activities$test_ligand,
+                                               slot = "scale.data")
+  colnames(ave_lig_exp$RNA)<-sender_celltypes
+    ligand_activities<-cbind(ligand_activities, ave_lig_exp$RNA)
+    ligand_activities<-ligand_activities[ligand_activities[sender_celltypes]>0,]
+  
+  
+  best_upstream_ligands = ligand_activities %>% top_n(lig_cut_off, pearson) %>% #.[.[sender_celltypes] > 0]  %>% 
+    arrange(-pearson) %>% pull(test_ligand) %>% unique()
+  
+    
+    
+    DotPlot(seuratObj_coi,group.by = 'leiden_anno', features = best_upstream_ligands %>% rev(), cols = "RdYlBu") + RotatedAxis()
+    
+    # 5\) Infer receptors and top-predicted target genes of ligands that are top-ranked in the ligand activity analysis
+    
+    ### Active target gene inference
+    
+    active_ligand_target_links_df = best_upstream_ligands %>%
+      lapply(get_weighted_ligand_target_links,geneset = geneset_oi, ligand_target_matrix = ligand_target_matrix, n = 200) %>%
+      bind_rows() %>% drop_na()
+    
+    active_ligand_target_links = prepare_ligand_target_visualization(ligand_target_df = active_ligand_target_links_df, ligand_target_matrix = ligand_target_matrix, cutoff = 0.33)
+    
+    order_ligands = intersect(best_upstream_ligands, colnames(active_ligand_target_links)) %>% rev() %>% make.names()
+    order_targets = active_ligand_target_links_df$target %>% unique() %>% intersect(rownames(active_ligand_target_links)) %>% make.names()
+    rownames(active_ligand_target_links) = rownames(active_ligand_target_links) %>% make.names() # make.names() for heatmap visualization of genes like H2-T23
+    colnames(active_ligand_target_links) = colnames(active_ligand_target_links) %>% make.names() # make.names() for heatmap visualization of genes like H2-T23
+    
+    vis_ligand_target = active_ligand_target_links[order_targets,order_ligands] %>% t()
+    colnames(vis_ligand_target)<-str_replace(colnames(vis_ligand_target),"[.]", "-")
+    
+    
+    
+    p_ligand_target_network = vis_ligand_target %>%
+      make_heatmap_ggplot("Prioritized ligands","Predicted target genes",
+                          color = "purple",legend_position = "top", x_axis_position = "top",
+                          legend_title = "Regulatory potential")  + theme(axis.text.x = element_text(face = "italic")) +
+      scale_fill_gradient2(low = "whitesmoke",  high = "purple"#, breaks = c(0,0.0025,0.005,0.01)
+      )
+    p_ligand_target_network
+    
+    
+    #weighted_networks_lr_gr
+    lr_network_top = lr_network %>% filter(from %in% best_upstream_ligands & to %in% expressed_receptors) %>% distinct(from,to)
+    best_upstream_receptors = lr_network_top %>% pull(to) %>% unique()
+    #######################
+    lr_network_top_df_large = weighted_networks_lr_gr %>% filter(from %in% best_upstream_ligands & to %in% best_upstream_receptors)
+    
+    lr_network_top_df = lr_network_top_df_large %>% spread("from","weight",fill = 0)
+    lr_network_top_matrix = lr_network_top_df %>% dplyr::select(-to) %>% as.matrix() %>% magrittr::set_rownames(lr_network_top_df$to)
+    
+    dist_receptors = dist(lr_network_top_matrix, method = "binary")
+    
+    ### Receptors of top-ranked ligands
+    lr_network_top = lr_network %>% filter(from %in% best_upstream_ligands & to %in% expressed_receptors) %>% distinct(from,to)
+    best_upstream_receptors = lr_network_top %>% pull(to) %>% unique()
+    
+    lr_network_top_df_large = weighted_networks_lr_sig %>% filter(from %in% best_upstream_ligands & to %in% best_upstream_receptors)
+    
+    lr_network_top_df = lr_network_top_df_large %>% spread("from","weight",fill = 0)
+    lr_network_top_matrix = lr_network_top_df %>% dplyr::select(-to) %>% as.matrix() %>% magrittr::set_rownames(lr_network_top_df$to)
+    
+    dist_receptors = dist(lr_network_top_matrix, method = "binary")
+    hclust_receptors = hclust(dist_receptors, method = "ward.D2")
+    order_receptors = hclust_receptors$labels[hclust_receptors$order]
+    
+    dist_ligands = dist(lr_network_top_matrix %>% t(), method = "binary")
+    hclust_ligands = hclust(dist_ligands, method = "ward.D2")
+    order_ligands_receptor = hclust_ligands$labels[hclust_ligands$order]
+    
+    order_receptors = order_receptors %>% intersect(rownames(lr_network_top_matrix))
+    order_ligands_receptor = order_ligands_receptor %>% intersect(colnames(lr_network_top_matrix))
+    
+    vis_ligand_receptor_network = lr_network_top_matrix[order_receptors, order_ligands_receptor]
+    rownames(vis_ligand_receptor_network) = order_receptors %>% make.names()
+    colnames(vis_ligand_receptor_network) = order_ligands_receptor %>% make.names()
+    
+    p_ligand_receptor_network_sig = vis_ligand_receptor_network %>% t() %>% 
+      make_heatmap_ggplot("Ligands","Receptors", color = "mediumvioletred", 
+                          x_axis_position = "top",legend_title = "Prior interaction potential")
+    #
+    ##
+    #
+    p_ligand_receptor_network_sig
+    
+    ### Receptors of top-ranked ligands, but after considering only bona fide ligand-receptor interactions documented in literature and publicly available databases
+    lr_network_strict = lr_network %>% filter(database != "ppi_prediction_go" & database != "ppi_prediction")
+    ligands_bona_fide = lr_network_strict %>% pull(from) %>% unique()
+    receptors_bona_fide = lr_network_strict %>% pull(to) %>% unique()
+    
+    lr_network_top_df_large_strict = lr_network_top_df_large %>% distinct(from,to) %>% inner_join(lr_network_strict, by = c("from","to")) %>% distinct(from,to)
+    lr_network_top_df_large_strict = lr_network_top_df_large_strict %>% inner_join(lr_network_top_df_large, by = c("from","to"))
+    
+    lr_network_top_df_strict = lr_network_top_df_large_strict %>% spread("from","weight",fill = 0)
+    lr_network_top_matrix_strict = lr_network_top_df_strict %>% dplyr::select(-to) %>% as.matrix() %>% magrittr::set_rownames(lr_network_top_df_strict$to)
+    
+    dist_receptors = dist(lr_network_top_matrix_strict, method = "binary")
+    hclust_receptors = hclust(dist_receptors, method = "ward.D2")
+    order_receptors = hclust_receptors$labels[hclust_receptors$order]
+    
+    dist_ligands = dist(lr_network_top_matrix_strict %>% t(), method = "binary")
+    hclust_ligands = hclust(dist_ligands, method = "ward.D2")
+    order_ligands_receptor = hclust_ligands$labels[hclust_ligands$order]
+    
+    order_receptors = order_receptors %>% intersect(rownames(lr_network_top_matrix_strict))
+    order_ligands_receptor = order_ligands_receptor %>% intersect(colnames(lr_network_top_matrix_strict))
+    
+    vis_ligand_receptor_network_strict = lr_network_top_matrix_strict[order_receptors, order_ligands_receptor]
+    rownames(vis_ligand_receptor_network_strict) = order_receptors %>% make.names()
+    colnames(vis_ligand_receptor_network_strict) = order_ligands_receptor %>% make.names()
+    
+    p_ligand_receptor_network_strict = vis_ligand_receptor_network_strict %>% t() %>% make_heatmap_ggplot("Ligands","Receptors", color = "mediumvioletred", x_axis_position = "top",legend_title = "Prior interaction potential\n(bona fide)")
+    #
+    ##
+    #
+    p_ligand_receptor_network_strict
+    
+    ## 6\) Summary visualizations of the NicheNet analysis
+    
+    
+    
+    # combined heatmap: overlay ligand activities with target genes
+    ligand_pearson_matrix = ligand_activities %>% dplyr::select(pearson) %>% as.matrix() %>% magrittr::set_rownames(ligand_activities$test_ligand)
+    
+    rownames(ligand_pearson_matrix) = rownames(ligand_pearson_matrix) %>% make.names()
+    colnames(ligand_pearson_matrix) = colnames(ligand_pearson_matrix) %>% make.names()
+    
+    vis_ligand_pearson = ligand_pearson_matrix[order_ligands, ] %>% as.matrix(ncol = 1) %>% magrittr::set_colnames("Pearson")
+    # p_ligand_pearson = vis_ligand_pearson %>% make_heatmap_ggplot("Prioritized ligands","Ligand activity", color = "darkorange",legend_position = "top", x_axis_position = "top", legend_title = "Pearson correlation coefficient\n(target gene prediction ability)") + theme(legend.text = element_text(size = 9))
+    
+    p_ligand_pearson = vis_ligand_pearson %>% make_heatmap_ggplot("Prioritized ligands","Ligand activity", color = "darkorange",legend_position = "top", x_axis_position = "top", legend_title = "Pearson correlation coefficient\ntarget gene prediction ability)")
+    p_ligand_pearson
+    
+    
+    figures_without_legend = cowplot::plot_grid(p_ligand_pearson + theme(legend.position = "none", axis.ticks = element_blank()) +
+                                                  ggtitle(paste0('condition_oi: ',condition_oi,' | gene_set: ',gs_n," | sender: ",toString(sender_celltypes)," | receiver: ",receiver)) +
+                                                  theme(axis.title.x = element_text()),
+                                                p_ligand_target_network + theme(legend.position = "none", axis.ticks = element_blank()) +
+                                                  ylab(""),
+                                                align = "hv",
+                                                nrow = 1,
+                                                rel_widths = c(ncol(vis_ligand_pearson)+10, ncol(vis_ligand_target)))
+    
+    legends = cowplot::plot_grid(
+      ggpubr::as_ggplot(ggpubr::get_legend(p_ligand_pearson)),
+      ggpubr::as_ggplot(ggpubr::get_legend(p_ligand_target_network)),
+      nrow = 1,
+      align = "h")
+    
+    
+    combined_plot = cowplot::plot_grid(figures_without_legend, legends, rel_heights = c(10,2), nrow = 2, align = "hv")
+    
+    
+    
+    
+    p1<-DimPlot(seurat_obj_receiver,group.by = "leiden_anno") #+ labs(title = "seurat_obj_receiver")
+    p2<-DimPlot(seurat_obj_receiver,group.by = "leiden_anno") + labs(title = "seurat_obj_receiver")
+    p3<-DimPlot(seuratObj_coi,group.by = Cluster_Sel_Ident)#,cols = scales::hue_pal()(2)[2]) #+ labs(title = "seuratObj_coi")
+    p4<-DimPlot(seuratObj_coi,group.by = Cluster_Sel_Ident) + labs(title = "seuratObj_coi")
+    p5<-DimPlot(seuratObj,group.by = Cluster_Sel_Ident) #+ labs(title = "seuratObj_coi")
+    p6<-DimPlot(seuratObj,group.by = Cluster_Sel_Ident) + labs(title = "seuratObj")
+    ######################################################################################################################################
+    
+    ######################################################################################################################################
+    matrix_mean<-function(mm){
+      mmax<-which(mm == max(mm), arr.ind = TRUE)
+      mmin<-which(mm == min(mm), arr.ind = TRUE)
+      vmax<-(mm[mmax[1,1],mmax[1,2]])
+      vmin<-(mm[mmin[1,1],mmin[1,2]])
+      (vmax+vmin)/2
+    }
+    ######################################################################################################################################
+    com_plo_rli_exp<-function(tar_genes,seu_obj,y_achse){
+      average_gene_expr_clu<-AverageExpression(object = subset(seu_obj,
+                                                               idents = levels(seu_obj)),
+                                               features = tar_genes,
+                                               slot = "scale.data")
+      vis_ligand_tumor_expression<-as.matrix(average_gene_expr_clu$RNA)
+      color = colorRampPalette(rev(c("orangered4", "orangered", "gray90", "dodgerblue",
+                                     "dodgerblue4")))(n = 50)
+      #colnames(vis_ligand_tumor_expression)<-paste0("Clu_",colnames(vis_ligand_tumor_expression))
+      x<-colnames(vis_ligand_tumor_expression)
+      x<-gsub(" ", "_", x, fixed = TRUE)
+      colnames(vis_ligand_tumor_expression)<-gsub("-", "_", x, fixed = TRUE)
+      p_ligand_tumor_expression = vis_ligand_tumor_expression %>% 
+        make_threecolor_heatmap_ggplot(y_achse,
+                                       "Cell types", low_color = head(color)[1],
+                                       mid_color = color[length(color) %/% 2], mid = 0,#matrix_mean(vis_ligand_tumor_expression),
+                                       high_color = tail(color)[1],
+                                       legend_position = "top", x_axis_position = "top",
+                                       legend_title = "Expression\n(averaged over\nsingle cells)") + 
+        theme(axis.text.y = element_text(face = "italic"))
+      p_ligand_tumor_expression
+    }
+    
+    
+    com_plo_tarec_exp<-function(tar_genes,seu_obj,y_achse){
+      average_gene_expr_clu<-AverageExpression(object = subset(seu_obj,
+                                                               idents = levels(seu_obj)),
+                                               features = tar_genes,
+                                               slot = "scale.data") #"counts")#"
+      vis_ligand_tumor_expression<-average_gene_expr_clu$RNA
+      color = color = colorRampPalette(rev(brewer.pal(n = 7, name ="RdYlBu")))(100)
+      
+      matrix_mean(vis_ligand_tumor_expression)
+      p_ligand_tumor_expression = t(vis_ligand_tumor_expression) %>% 
+        make_threecolor_heatmap_ggplot(y_achse,
+                                       "Cell types", low_color = head(color)[1],
+                                       mid_color = color[length(color) %/% 2], mid = 0,#matrix_mean(vis_ligand_tumor_expression),
+                                       high_color = tail(color)[1],
+                                       legend_position = "top", x_axis_position = "top",
+                                       legend_title = "Expression\n(averaged over\nsingle cells)") + 
+        theme(axis.text.y = element_text(face = "italic"))
+      p_ligand_tumor_expression
+    }
+    #######################################################################################################################################
+    
+    ######################################################################################################################################
+    # Idents(seuratObj)<-"batch"
+    SOTC<-my_seu#seuratObj#subset(seuratObj,idents=c(sender_celltypes,receiver))
+    Idents(SOTC)<-Cluster_Sel_Ident
+    # SOTC <- subset(SOTC,idents=c(sender_celltypes,receiver))
+    # SOTC <- ScaleData(object = SOTC)
+    co_bo_plo_tg<-combined_plotting_T(p_ligand_pearson = p_ligand_pearson,
+                                      p_ligand_expression = com_plo_rli_exp(rownames(vis_ligand_pearson),SOTC,"Target ligands"),
+                                      p_network = p_ligand_target_network,
+                                      p_tarec_expression = com_plo_tarec_exp(colnames(vis_ligand_target),SOTC,"Clu"),
+                                      SOTC,
+                                      mx_size = vis_ligand_target,
+                                      fig.title
+    )
+    co_bo_plo_tg
+    
+    rec_comb<-t(vis_ligand_receptor_network)
+    rec_comb
+    rec_comb <- rec_comb[match(rownames(vis_ligand_pearson), rownames(rec_comb)), ]
+    
+    p_ligand_receptor_comb = rec_comb  %>% #t() %>%
+  make_heatmap_ggplot("Ligands","Receptors", color = "mediumvioletred", x_axis_position = "top",
+                      legend_title = "Prior interaction potential\n(bona fide)")
+    
+    co_bo_plo_rec_li<-combined_plotting_T(p_ligand_pearson = p_ligand_pearson,
+                                      p_ligand_expression = com_plo_rli_exp(rownames(rec_comb),SOTC,"Target ligands"),
+                                      p_network = p_ligand_receptor_comb,
+                                      p_tarec_expression = com_plo_tarec_exp(colnames(rec_comb),SOTC,"Clu"),
+                                      SOTC,
+                                      mx_size = rec_comb,
+                                      fig.title
+    )
+    co_bo_plo_rec_li
+
+    co_bo_plo_rec<-combined_plotting_R(p_ligand_expression = com_plo_rli_exp(colnames(vis_ligand_receptor_network_strict),
+                                                                             SOTC,"Receptor ligands"),
+                                       p_network = p_ligand_receptor_network_strict,
+                                       p_tarec_expression = com_plo_tarec_exp(rownames(vis_ligand_receptor_network_strict),
+                                                                              SOTC,"Clu"),
+                                       SOTC,
+                                       mx_size = t(vis_ligand_receptor_network_strict),
+                                       fig.title
+    )
+    co_bo_plo_rec
+
+    co_bo_plo_rec_f<-combined_plotting_R(p_ligand_expression = com_plo_rli_exp(colnames(vis_ligand_receptor_network),
+                                                                               SOTC,"Receptor ligands"),
+                                         p_network = p_ligand_receptor_network_sig,
+                                         p_tarec_expression = com_plo_tarec_exp(rownames(vis_ligand_receptor_network),
+                                                                                SOTC,"Clu"),
+                                         SOTC,
+                                         mx_size = t(vis_ligand_receptor_network),
+                                         fig.title
+    )
+    co_bo_plo_rec_f
+    ############################### to pdf ################################################################################################
+    require(lattice)
+    pdf(sprintf("%s/%s_%s_combined_plots.pdf", save_path,Sys.Date(),fig.title), width = 18, height = 12)
+    # plot.new()
+    print(p_hist_lig_activity)
+    # print(DotPlot(seuratObj, features = best_upstream_ligands %>% rev(), cols = "RdYlBu") + RotatedAxis())
+    # mtext(fig.title, outer=TRUE,  cex=1, line=-1)
+    print(CombinePlots(list(p2,p4,p5,p6),ncol = 2))
+    #print(DotPlot(seuratObj_coi, features = best_upstream_ligands %>% rev(), cols = "RdYlBu") + RotatedAxis())
+    
+    # std plots
+    # print(p_ligand_target_network)
+    # print(p_ligand_receptor_network_gr)
+    # print(p_ligand_receptor_network_strict)
+    # print(combined_plot)
+    
+    # plots with expression
+    #print(co_bo_plo_rec_f)
+    print(co_bo_plo_rec)
+    print(co_bo_plo_rec_li)
+    print(co_bo_plo_tg)
+    
+    ##vln##
+    
+    dev.off()
+    
+ ############# to TXT ################    
+    if(write_textfile==T)
+    {
+        write.table(ligand_activities,
+            sprintf("%s/%s_%s_ligand_activities.txt", save_path,Sys.Date(),fig.title),
+            quote = F, sep = "\t")
+        write.table(vis_ligand_pearson,
+            sprintf("%s/%s_%s_vis_ligand_pearson.txt", save_path,Sys.Date(),fig.title),
+            quote = F, sep = "\t")
+        write.table(t(vis_ligand_receptor_network),
+            sprintf("%s/%s_%s_receptor.txt", save_path,Sys.Date(),fig.title),
+            quote = F, sep = "\t")
+        write.table(t(vis_ligand_receptor_network_strict),
+                    sprintf("%s/%s_%s_receptor_strict.txt", save_path,Sys.Date(),fig.title),
+                    quote = F, sep = "\t")
+        write.table(vis_ligand_target,
+                    sprintf("%s/%s_%s_target.txt", save_path,Sys.Date(),fig.title),
+                    quote = F, sep = "\t")
+    }
+```
+
+
+selected ligand receptor pairs and interaction were composed for the cicro plot
+```{r}
+###########################
+#######CICRO_Start#########
+###########################
+selected_reli_df<-read.xlsx(paste0(save_path,"/","Fig6_selected_lig_rec.xlsx"),1)
+
+ligands_to_keep <- as.vector(as.matrix(selected_reli_df[c(3,5,7)]))
+ligands_to_keep <- ligands_to_keep[!is.na(ligands_to_keep)]
+
+col_MC_sender <- c("#0b8e00","#005e33","#64bc6f")
+col_MC_sender <- c("purple","red","blue")
+col_MC_sender <- c("black","red","blue")
+lig_ty_na<-names(col_MC_sender)<-colnames(selected_reli_df[c(3,5,7)])
+grid_col_ligand <- col_MC_sender
+
+
+col_EC_receptors <- "#fb9a99"
+
+scales::show_col(col_MC_sender)
+print(col_MC_sender)
+```
+
+
+```{r}
+
+ligand_type_indication_df = tibble(
+    ligand_type = ligands_to_keep,
+    ligand = ligands_to_keep)
+
+for (i in lig_ty_na) {
+  print(i)
+  d<-selected_reli_df[[i]]
+  d<-match(d[!is.na(d)],ligand_type_indication_df$ligand)
+  d<-d[!is.na(d)]
+  ligand_type_indication_df$ligand_type[d]<-rep(i,length(d))
+}
+
+    ### Infer target genes of top-ranked ligands and visualize in a circos plot
+
+    active_ligand_target_links_df = best_upstream_ligands %>% lapply(get_weighted_ligand_target_links,geneset = geneset_oi, ligand_target_matrix = ligand_target_matrix, n = 250) %>% bind_rows()
+    active_ligand_target_links_df = na.omit(active_ligand_target_links_df)
+
+    active_ligand_target_links_df = active_ligand_target_links_df %>% mutate(target_type = "endothelial") %>% inner_join(ligand_type_indication_df) # if you want ot make circos plots for multiple gene sets, combine the different data frames and differentiate which target belongs to which gene set via the target type
+    
+circos_links = active_ligand_target_links_df
+```
+
+```{r}
+grid_col_tbl_ligand = tibble(ligand_type = grid_col_ligand %>% names(), color_ligand_type = grid_col_ligand)
+grid_col_tbl_target = tibble(target_type = grid_col_target %>% names(), color_target_type = grid_col_target)
+
+    circos_links = circos_links %>% mutate(ligand = paste(ligand," ")) # extra space: make a difference between a gene as ligand and a gene as target!
+    circos_links = circos_links %>% inner_join(grid_col_tbl_ligand) %>% inner_join(grid_col_tbl_target)
+    links_circle = circos_links %>% dplyr::select(ligand,target, weight)
+
+    ligand_color = circos_links %>% distinct(ligand,color_ligand_type)
+    grid_ligand_color = ligand_color$color_ligand_type %>% set_names(ligand_color$ligand)
+    target_color = circos_links %>% distinct(target,color_target_type)
+    grid_target_color = target_color$color_target_type %>% set_names(target_color$target)
+
+    grid_col =c(grid_ligand_color,grid_target_color)
+
+    # give the option that links in the circos plot will be transparant ~ ligand-target potential score
+    transparency = circos_links %>% mutate(weight =(weight-min(weight))/(max(weight)-min(weight))) %>% mutate(transparency = 1-weight) %>% .$transparency
+
+    ## order ligands and targets
+    target_order = circos_links$target %>% unique()
+    ligand_order = c(ligand_type_indication_df$ligand) %>% c(paste(.," ")) %>% intersect(circos_links$ligand)
+    order = c(ligand_order,target_order)
+
+    # define the gaps between the different segments
+
+    width_same_cell_same_ligand_type = 0.5
+    width_different_cell = 6
+    width_ligand_target = 15
+    width_same_cell_same_target_type = 0.5
+
+    gaps = c()
+    for (i in 1:length(lig_ty_na)) {
+      print(lig_ty_na[i])
+      print(nrow(circos_links %>% filter(ligand_type == lig_ty_na[i])))
+      # if(length(circos_links$ligand_type == lig_ty_na[i])==1){
+      #   gaps = c(gaps,
+      #            rep(width_same_cell_same_ligand_type, times = (circos_links %>%
+      #                                                             filter(ligand_type == lig_ty_na[i]) %>% distinct(ligand) %>% nrow()))
+      # }else{
+      gaps = c(gaps,
+               rep(width_same_cell_same_ligand_type, times = (circos_links %>%
+                                                                filter(ligand_type == lig_ty_na[i]) %>% distinct(ligand) %>% nrow() -1))
+      )
+      #   print(gaps)
+      # }
+      if (i < length(lig_ty_na)){
+        gaps = c(gaps,width_different_cell)
+      }else{
+        gaps = c(gaps,width_ligand_target)
+      }
+
+    }
+
+    gaps = c(gaps,
+             rep(width_same_cell_same_target_type, times = (circos_links %>% filter(target_type == "endothelial") %>% distinct(target) %>% nrow() -1)),
+             width_ligand_target
+    )
+```
+
+
+plotcircos
+```{r}
+circos.clear()
+
+circos.par(gap.degree = gaps)
+chordDiagram(links_circle, directional = 1,order=order,link.sort = TRUE, link.decreasing = FALSE, grid.col = grid_col,transparency = transparency, diffHeight = 0.005, direction.type = c("diffHeight", "arrows"),link.arr.type = "big.arrow", link.visible = links_circle$weight >= cutoff_include_all_ligands,annotationTrack = "grid",
+             preAllocateTracks = list(track.height = 0.075))
+title(paste0(fig.title,"_ligand_target"))
+# we go back to the first track and customize sector labels
+circos.track(track.index = 1, panel.fun = function(x, y) {
+  circos.text(CELL_META$xcenter, CELL_META$ylim[1], CELL_META$sector.index,
+              facing = "clockwise", niceFacing = TRUE, adj = c(0, 0.55), cex = 1)
+}, bg.border = NA) #
+
+```
+
+Save circos plot to an svg file
+```{r}
+circos.clear()
+
+svg(paste0(save_path,"/",Sys.Date(),"_",fig.title,"_","ligand_target_circos.svg"), width = 15, height = 18)
+    circos.par(gap.degree = gaps)
+    chordDiagram(links_circle, directional = 1,order=order,link.sort = TRUE, link.decreasing = FALSE, grid.col = grid_col,transparency = transparency, diffHeight = 0.005, direction.type = c("diffHeight", "arrows"),link.arr.type = "big.arrow", link.visible = links_circle$weight >= cutoff_include_all_ligands,annotationTrack = "grid",
+                 preAllocateTracks = list(track.height = 0.075))
+    title(paste0(fig.title,"_ligand_target"))
+    # we go back to the first track and customize sector labels
+    circos.track(track.index = 1, panel.fun = function(x, y) {
+      circos.text(CELL_META$xcenter, CELL_META$ylim[1], CELL_META$sector.index,
+                  facing = "clockwise", niceFacing = TRUE, adj = c(0, 0.55), cex = 1)
+    }, bg.border = NA) #
+    circos.clear()
+    dev.off()
+    ## png
+    ##   2
+```

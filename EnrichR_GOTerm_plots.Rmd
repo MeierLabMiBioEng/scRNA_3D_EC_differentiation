@@ -1,0 +1,91 @@
+---
+title: "EnrichR_GOTerm_Plots"
+author: "Simon T. Rosowski"
+date: '2022-07-20'
+output: html_document
+---
+
+load libraries
+```{r}
+library(stringr)
+library(ggpubr)
+library(enrichR)
+```
+
+load DEGs and select clusters of interest
+```{r}
+file_location<-"path to DEG file"
+
+file_name<-list.files(file_location, full.names = T,pattern = ".xls")#[1]
+file_name
+
+file_name<-file_name[4]#[str_detect(file_name,"uni")]
+file_name
+
+DDG<-xlsx::read.xlsx(file_name,1)
+DDG
+
+DDG<-DDG[,c(3,4,6)]
+```
+
+function for bar plots
+```{r}
+enrich_w_enrichr<-function(logte){
+  logte<-as.character(na.omit(logte))
+  print(paste0("####_NR: Genes:",length(logte[logte != ""]),"##############"))
+  print(tail(logte))
+  enriched <- lapply(dbs, function(x) enrichr(logte, x)[[1]])
+  plot_list<-list()
+  for (i in 1:length(enriched)) {
+    data <- data.frame(
+    name=enriched[[i]]$Term[1:nr],
+    # name=sapply(stringr::str_split(enriched[[i]]$Term[1:nr], 
+    #                                " Homo", n=2), function(x) x[1]) ,  
+    value=enriched[[i]]$Adjusted.P.value[1:nr]
+    )
+    data$value<-  c(-log10(data$value))
+    # Barplot
+    plot_list[[i]]<-ggplot(data, aes(x=reorder(name, value), y=value)) + 
+    geom_bar(stat = "identity"#, fill="#abdda4"
+             ) +
+    coord_flip()+
+    #ggtitle(dbs[i])+
+    ylab("-lg(adj. p-value)")+#ylim(c(0.8, 1.0))+
+    xlab(paste0("enriched ",dbs[i]))+
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+          panel.background = element_blank(), axis.line = element_line(colour = "black"))
+  }
+  
+  list(plot_list,enriched)
+}
+```
+
+plot different enriched terms per cluster
+```{r}
+setwd(file_location)
+nr=15
+
+dbs <- c(#"GO_Molecular_Function_2018", "GO_Cellular_Component_2018", 
+  "GO_Biological_Process_2018",
+  "KEGG_2019_Human", "Reactome_2016"
+)
+
+all_enr_pw<-list()
+for(i in colnames(DDG)){
+  plot_list<-enrich_w_enrichr(logte=DDG[i][,1])
+  print(i)
+  all_enr_pw[[i]]<-list(plot_list[[2]][[1]][1:nr,c(1,2,3,4,8,9)],
+                        plot_list[[2]][[2]][1:nr,c(1,2,3,4,8,9)])
+  # print(plot_list[[2]][[2]][1:nr,c(1,2,3,4,8)])
+  # write.table(plot_list[[2]][[which(colnames(DDG)==i)]],
+  #             paste0(file_location,"/20210319_EnrichR_filtered_DDGs_",i,".txt"),
+  #             sep="\t")
+  pdf(paste0(file_location,"/20210917_EnrichR_DEGs_day12_",i,".pdf"),width=30, height=8)
+  print(ggarrange(plotlist = plot_list[[1]],  
+                  #labels = c("A", "B"),
+                  ncol = 1 , nrow = 1)
+  )
+  dev.off()
+}
+```
+
