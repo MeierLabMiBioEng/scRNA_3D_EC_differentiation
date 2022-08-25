@@ -18,6 +18,9 @@ library(ggpubr)
 library(xlsx)
 ```
 
+
+the script is based on the tutorials of the package developers which can be found under: https://github.com/saeyslab/nichenetr
+
 load function and data
 ```{r}
 ligand_target_matrix = readRDS(url("https://zenodo.org/record/3260758/files/ligand_target_matrix.rds"))
